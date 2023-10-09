@@ -1,0 +1,6 @@
+# Default
+.env
+node_modules
+
+# Build
+dist
