@@ -86,7 +86,7 @@ export default class SetupModule extends Module<ModuleConfig> {
       "App: http://localhost:3010/?network=local",
       {
         text: "HTTP API:",
-        list: ["Endpoint: http://localhost:3020", "Documentation: http://localhost:3030"],
+        list: ["Endpoint: http://localhost:3020", "Documentation: http://localhost:3020/docs"],
       },
     ];
   }
