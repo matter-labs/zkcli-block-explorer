@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: ./packages/app/Dockerfile
+    environment:
+      - VITE_APP_ENVIRONMENT=local
     command: npm run --prefix packages/app dev -- --host
     ports:
       - '3010:3010'
