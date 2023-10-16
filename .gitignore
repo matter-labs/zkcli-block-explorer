@@ -1,6 +1,6 @@
 # Default
-node_modules
 .env
+node_modules
 
 # Build
 dist

@@ -24,9 +24,13 @@ export default class SetupModule extends Module<ModuleConfig> {
   }
 
   gitUrl = `https://github.com/${REPO_URL}.git`;
-  gitFolder = path.join(this.dataDirPath, "block-explorer");
   localComposeFile = path.join(files.getDirPath(import.meta.url), "../docker-compose.yml");
-  composeFile = path.join(this.gitFolder, "zkcli-docker-compose.yaml");
+  get gitFolder() {
+    return path.join(this.dataDirPath, "./block-explorer");
+  }
+  get composeFile() {
+    return path.join(this.gitFolder, "zkcli-docker-compose.yaml");
+  }
 
   /**
    * Assumptions:
@@ -83,10 +87,10 @@ export default class SetupModule extends Module<ModuleConfig> {
   }
   getStartupInfo() {
     return [
-      "App: http://localhost:3010/?network=local",
+      "App: http://localhost:3010",
       {
         text: "HTTP API:",
-        list: ["Endpoint: http://localhost:3020", "Documentation: http://localhost:3020/docs"],
+        list: ["Endpoint: http://localhost:3020", "Documentation: http://localhost:3030"],
       },
     ];
   }
