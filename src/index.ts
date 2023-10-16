@@ -52,7 +52,16 @@ export default class SetupModule extends Module<ModuleConfig> {
     return files.fileOrDirExists(this.gitFolder);
   }
   createDockerComposeSymlink() {
-    files.createSymlink(this.localComposeFile, this.composeFile);
+    try {
+      files.createSymlink(this.localComposeFile, this.composeFile);
+    } catch (error) {
+      if (error?.toString().includes("operation not permitted")) {
+        throw new Error(
+          "Not enough permissions to create necessary files. Please run console in administrator mode and try again."
+        );
+      }
+      throw error;
+    }
   }
   isDockerComposeCreated() {
     return files.fileOrDirExists(this.composeFile);
