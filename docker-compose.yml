@@ -5,14 +5,8 @@ services:
     build:
       context: .
       dockerfile: ./packages/app/Dockerfile
-    environment:
-      - VITE_APP_ENVIRONMENT=local
-    command: npm run --prefix packages/app dev -- --host
     ports:
       - '3010:3010'
-    volumes:
-      - ./packages/app:/usr/src/app/packages/app
-      - /usr/src/app/packages/app/node_modules
     depends_on:
       - api
     restart: unless-stopped
@@ -21,8 +15,6 @@ services:
     build:
       context: .
       dockerfile: ./packages/worker/Dockerfile
-      target: development-stage
-    command: npm run --prefix packages/worker dev:debug
     environment:
       - PORT=3001
       - LOG_LEVEL=verbose
@@ -33,21 +25,12 @@ services:
       - DATABASE_NAME=block-explorer
       - BLOCKCHAIN_RPC_URL=http://host.docker.internal:3050
       - BATCHES_PROCESSING_POLLING_INTERVAL=1000
-    ports:
-      - '3001:3001'
-      - '9229:9229'
-      - '9230:9230'
-    volumes:
-      - ./packages/worker:/usr/src/app/packages/worker
-      - /usr/src/app/packages/worker/node_modules
     restart: unless-stopped
 
   api:
     build:
       context: .
       dockerfile: ./packages/api/Dockerfile
-      target: development-stage
-    command: npm run --prefix packages/api dev:debug
     environment:
       - PORT=3020
       - METRICS_PORT=3005
@@ -56,12 +39,6 @@ services:
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/block-explorer
     ports:
       - '3020:3020'
-      - '3005:3005'
-      - '9231:9229'
-      - '9232:9230'
-    volumes:
-      - ./packages/api:/usr/src/app/packages/api
-      - /usr/src/app/packages/api/node_modules
     depends_on:
       - worker
     restart: unless-stopped
@@ -72,8 +49,6 @@ services:
       driver: none 
     volumes:
       - postgres:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s

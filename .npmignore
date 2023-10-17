@@ -5,7 +5,8 @@
 !dist/**/*
 
 # Source
+!app-config.js
+!docker-compose.yml
 !package.json
 !package-lock.json
 !LICENSE-MIT
-!docker-compose.yml
