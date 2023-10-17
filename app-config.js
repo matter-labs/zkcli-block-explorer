@@ -1,0 +1,3 @@
+window["##runtimeConfig"] = {
+    appEnvironment: "local",
+};

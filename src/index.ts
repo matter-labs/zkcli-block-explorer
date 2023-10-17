@@ -6,6 +6,7 @@ import type { ConfigHandler, NodeInfo } from "zksync-cli/lib";
 let latestVersion: string | undefined;
 
 const REPO_URL = "matter-labs/block-explorer";
+const APP_RUNTIME_CONFIG_PATH = "/usr/src/app/packages/app/dist/config.js";
 
 type ModuleConfig = {
   version?: string;
@@ -25,6 +26,7 @@ export default class SetupModule extends Module<ModuleConfig> {
 
   gitUrl = `https://github.com/${REPO_URL}.git`;
   localComposeFile = path.join(files.getDirPath(import.meta.url), "../docker-compose.yml");
+  localAppConfigFile = path.join(files.getDirPath(import.meta.url), "../app-config.js");
   get gitFolder() {
     return path.join(this.dataDirPath, "./block-explorer");
   }
@@ -63,6 +65,11 @@ export default class SetupModule extends Module<ModuleConfig> {
       throw error;
     }
   }
+  async applyAppConfig() {
+    await helpers.executeCommand(`docker cp ${this.localAppConfigFile} block-explorer-app-1:${APP_RUNTIME_CONFIG_PATH}`,
+      { silent: true, cwd: this.gitFolder }
+    );
+  }
   isDockerComposeCreated() {
     return files.fileOrDirExists(this.composeFile);
   }
@@ -79,6 +86,7 @@ export default class SetupModule extends Module<ModuleConfig> {
       this.createDockerComposeSymlink();
     }
     await docker.compose.create(this.composeFile);
+    await this.applyAppConfig();
     this.setModuleConfig({
       ...this.moduleConfig,
       version: latestVersion,
@@ -99,7 +107,7 @@ export default class SetupModule extends Module<ModuleConfig> {
       "App: http://localhost:3010",
       {
         text: "HTTP API:",
-        list: ["Endpoint: http://localhost:3020", "Documentation: http://localhost:3030"],
+        list: ["Endpoint: http://localhost:3020", "Documentation: http://localhost:3020/docs"],
       },
     ];
   }
