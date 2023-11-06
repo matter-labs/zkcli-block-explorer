@@ -23,7 +23,7 @@ services:
       - DATABASE_USER=postgres
       - DATABASE_PASSWORD=postgres
       - DATABASE_NAME=block-explorer
-      - BLOCKCHAIN_RPC_URL=http://host.docker.internal:3050
+      - BLOCKCHAIN_RPC_URL=http://host.docker.internal:${RPC_PORT}
       - BATCHES_PROCESSING_POLLING_INTERVAL=1000
     restart: unless-stopped
 

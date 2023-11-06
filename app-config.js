@@ -1,3 +1,0 @@
-window["##runtimeConfig"] = {
-  appEnvironment: "local",
-};

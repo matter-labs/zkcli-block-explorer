@@ -1,6 +1,6 @@
 import path from "path";
 import { Module, files, git, docker, helpers, ModuleCategory, Logger } from "zksync-cli/lib";
-
+import * as fs from "node:fs";
 import type { ConfigHandler, NodeInfo } from "zksync-cli/lib";
 
 let latestVersion: string | undefined;
@@ -10,9 +10,35 @@ const APP_RUNTIME_CONFIG_PATH = "/usr/src/app/packages/app/dist/config.js";
 
 type ModuleConfig = {
   version?: string;
+  l2Network?: NodeInfo["l2"];
+};
+
+const appConfigTemplate = {
+  appEnvironment: "local",
+  environmentConfig: {
+    networks: [
+      {
+        apiUrl: "http://localhost:3020",
+        bridgeUrl: "http://localhost:3000/bridge",
+        hostnames: ["localhost"],
+        icon: "/images/icons/zksync-arrows.svg",
+        l2ChainId: 270,
+        l2NetworkName: "Local Node",
+        l2WalletUrl: "http://localhost:3000",
+        maintenance: false,
+        name: "local",
+        newProverUrl: "https://storage.googleapis.com/zksync-era-testnet-proofs/proofs_fri",
+        published: true,
+        rpcUrl: "http://localhost:3050"
+      }
+    ]
+  }
 };
 
 export default class SetupModule extends Module<ModuleConfig> {
+  private readonly localFolder: string;
+  private readonly gitUrl: string;
+
   constructor(config: ConfigHandler) {
     super(
       {
@@ -22,40 +48,91 @@ export default class SetupModule extends Module<ModuleConfig> {
       },
       config
     );
+    this.localFolder = files.getDirPath(import.meta.url);
+    this.gitUrl = `https://github.com/${REPO_URL}.git`;
   }
 
-  gitUrl = `https://github.com/${REPO_URL}.git`;
-  localComposeFile = path.join(files.getDirPath(import.meta.url), "../docker-compose.yml");
-  localAppConfigFile = path.join(files.getDirPath(import.meta.url), "../app-config.js");
-  get gitFolder() {
+  get installedModuleFolder() {
     return path.join(this.dataDirPath, "./block-explorer");
   }
-  get composeFile() {
-    return path.join(this.gitFolder, "zkcli-docker-compose.yaml");
+  get installedComposeFile() {
+    return path.join(this.installedModuleFolder, "zkcli-docker-compose.yaml");
   }
 
-  /**
-   * Assumptions:
-   * - If an L1 node is detected, we assume the user is utilizing the default dockerized testing node.
-   * - If no L1 node is found, it's assumed the user is using the default in-memory node.
-   *
-   * Limitation:
-   * This method does not account for custom RPC URLs. This limitation should be addressed in future
-   * iterations of this module.
-   */
-  isNodeSupported(nodeInfo: NodeInfo) {
-    if (nodeInfo.l1) {
-      return true;
-    }
-    return false;
+  getLocalFilePath(fileName: string): string {
+    return path.join(this.localFolder, fileName);
+  }
+
+  async getL2Network(): Promise<NodeInfo["l2"]> {
+    const nodeInfo = await this.configHandler.getNodeInfo();
+    return nodeInfo.l2;
+  }
+
+  isNodeSupported() {
+    return true;
   }
 
   isRepoCloned() {
-    return files.fileOrDirExists(this.gitFolder);
+    return files.fileOrDirExists(this.installedModuleFolder);
   }
-  createDockerComposeSymlink() {
+
+  async isInstalled() {
+    if (!this.moduleConfig.version || !this.moduleConfig.l2Network || !this.isRepoCloned()) {
+      return false;
+    }
+
+    const { chainId, rpcUrl } = this.moduleConfig.l2Network;
+    const l2Network = await this.getL2Network();
+    if (l2Network.chainId !== chainId || l2Network.rpcUrl !== rpcUrl) {
+      return false;
+    }
+
+    return (await docker.compose.status(this.installedComposeFile)).length ? true : false;
+  }
+
+  async applyAppConfig(l2Network: NodeInfo["l2"]) {
+    appConfigTemplate.environmentConfig.networks[0].rpcUrl = l2Network.rpcUrl;
+    appConfigTemplate.environmentConfig.networks[0].l2ChainId = l2Network.chainId;
+
+    const appConfigPath = path.join(this.installedModuleFolder, "app-config.js");
+    const appConfig = `window["##runtimeConfig"] = ${JSON.stringify(appConfigTemplate)};`;
+
+    fs.writeFileSync(appConfigPath, appConfig, "utf-8");
+
+    const commandError = await helpers.executeCommand(
+      `docker cp ${appConfigPath} block-explorer-app-1:${APP_RUNTIME_CONFIG_PATH}`,
+      { silent: true, cwd: this.installedModuleFolder }
+    );
+
+    if (commandError) {
+      throw new Error(`Error while copying app config to the app container: ${commandError}`);
+    }
+  }
+
+  async install() {
     try {
-      files.createSymlink(this.localComposeFile, this.composeFile);
+      const l2Network = await this.getL2Network();
+      await git.cloneRepo(this.gitUrl, this.installedModuleFolder);
+
+      const latestVersion = (await this.getLatestVersionFromLocalRepo())!;
+      await this.gitCheckoutVersion(latestVersion);
+
+      Logger.info("Copying module configuration files...");
+      fs.copyFileSync(this.getLocalFilePath("../docker-compose.yml"), this.installedComposeFile);
+      const rpcPort = l2Network.rpcUrl.split(":").at(-1) || "3050";
+      fs.writeFileSync(path.join(this.installedModuleFolder, ".env"), `RPC_PORT=${rpcPort}`, "utf-8");
+
+      await docker.compose.create(this.installedComposeFile);
+
+      Logger.info("Applying App config...");
+      await this.applyAppConfig(l2Network);
+
+      Logger.info("Saving module config...");
+      this.setModuleConfig({
+        ...this.moduleConfig,
+        version: latestVersion,
+        l2Network,
+      });
     } catch (error) {
       if (error?.toString().includes("operation not permitted")) {
         throw new Error(
@@ -65,44 +142,19 @@ export default class SetupModule extends Module<ModuleConfig> {
       throw error;
     }
   }
-  async applyAppConfig() {
-    await helpers.executeCommand(
-      `docker cp ${this.localAppConfigFile} block-explorer-app-1:${APP_RUNTIME_CONFIG_PATH}`,
-      { silent: true, cwd: this.gitFolder }
-    );
-  }
-  isDockerComposeCreated() {
-    return files.fileOrDirExists(this.composeFile);
-  }
-  async isInstalled() {
-    if (!this.isRepoCloned() || !this.isDockerComposeCreated()) return false;
-
-    return (await docker.compose.status(this.composeFile)).length ? true : false;
-  }
-  async install() {
-    await git.cloneRepo(this.gitUrl, this.gitFolder);
-    const latestVersion = (await this.getLatestVersionFromLocalRepo())!;
-    await this.gitCheckoutVersion(latestVersion);
-    if (!this.isDockerComposeCreated()) {
-      this.createDockerComposeSymlink();
-    }
-    await docker.compose.create(this.composeFile);
-    await this.applyAppConfig();
-    this.setModuleConfig({
-      ...this.moduleConfig,
-      version: latestVersion,
-    });
-  }
 
   async isRunning() {
-    return (await docker.compose.status(this.composeFile)).some(({ isRunning }) => isRunning);
+    return (await docker.compose.status(this.installedComposeFile)).some(({ isRunning }) => isRunning);
   }
+
   get startAfterNode() {
     return true;
   }
+
   async start() {
-    await docker.compose.up(this.composeFile);
+    await docker.compose.up(this.installedComposeFile);
   }
+
   getStartupInfo() {
     return [
       "App: http://localhost:3010",
@@ -114,23 +166,26 @@ export default class SetupModule extends Module<ModuleConfig> {
   }
 
   async getLogs() {
-    return await docker.compose.logs(this.composeFile);
+    return await docker.compose.logs(this.installedComposeFile);
   }
 
   get version() {
-    return this.moduleConfig.version?.toString() ?? undefined;
+    return this.moduleConfig.version ?? undefined;
   }
+
   async gitCheckoutVersion(version: string) {
-    await helpers.executeCommand(`git checkout ${version}`, { silent: true, cwd: this.gitFolder });
+    await helpers.executeCommand(`git checkout ${version}`, { silent: true, cwd: this.installedModuleFolder });
   }
+
   async gitFetchTags() {
-    await helpers.executeCommand("git fetch --tags", { silent: true, cwd: this.gitFolder });
+    await helpers.executeCommand("git fetch --tags", { silent: true, cwd: this.installedModuleFolder });
   }
+
   async getLatestVersionFromLocalRepo(): Promise<string> {
     const commitHash = (
       await helpers.executeCommand("git rev-list --tags --max-count=1", {
         silent: true,
-        cwd: this.gitFolder,
+        cwd: this.installedModuleFolder,
       })
     )?.trim();
     if (!commitHash?.length) {
@@ -140,7 +195,7 @@ export default class SetupModule extends Module<ModuleConfig> {
     const version = (
       await helpers.executeCommand(`git describe --tags ${commitHash}`, {
         silent: true,
-        cwd: this.gitFolder,
+        cwd: this.installedModuleFolder,
       })
     )?.trim();
     if (!version?.length || !version.startsWith("v")) {
@@ -148,6 +203,7 @@ export default class SetupModule extends Module<ModuleConfig> {
     }
     return version;
   }
+
   async getLatestVersion(): Promise<string> {
     if (latestVersion) {
       return latestVersion;
@@ -164,16 +220,17 @@ export default class SetupModule extends Module<ModuleConfig> {
     }
     return latestVersion;
   }
+
   async update() {
     await this.clean();
     await this.install();
   }
 
   async stop() {
-    await docker.compose.stop(this.composeFile);
+    await docker.compose.stop(this.installedComposeFile);
   }
 
   async clean() {
-    await docker.compose.down(this.composeFile);
+    await docker.compose.down(this.installedComposeFile);
   }
 }
