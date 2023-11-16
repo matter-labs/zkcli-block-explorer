@@ -1,9 +1,8 @@
+import os from "os";
 import path from "path";
 import { Module, files, git, docker, helpers, ModuleCategory, Logger } from "zksync-cli/lib";
 import * as fs from "node:fs";
 import type { ConfigHandler, NodeInfo } from "zksync-cli/lib";
-
-let latestVersion: string | undefined;
 
 const REPO_URL = "matter-labs/block-explorer";
 const APP_RUNTIME_CONFIG_PATH = "/usr/src/app/packages/app/dist/config.js";
@@ -37,7 +36,7 @@ const appConfigTemplate = {
 
 export default class SetupModule extends Module<ModuleConfig> {
   private readonly localFolder: string;
-  private readonly gitUrl: string;
+  private latestVersion?: string;
 
   constructor(config: ConfigHandler) {
     super(
@@ -49,18 +48,18 @@ export default class SetupModule extends Module<ModuleConfig> {
       config
     );
     this.localFolder = files.getDirPath(import.meta.url);
-    this.gitUrl = `https://github.com/${REPO_URL}.git`;
-  }
-
-  get installedModuleFolder() {
-    return path.join(this.dataDirPath, "./block-explorer");
-  }
-  get installedComposeFile() {
-    return path.join(this.installedModuleFolder, "zkcli-docker-compose.yaml");
   }
 
   getLocalFilePath(fileName: string): string {
     return path.join(this.localFolder, fileName);
+  }
+
+  getInstalledModuleFilePath(fileName: string): string {
+    return path.join(this.dataDirPath, fileName);
+  }
+
+  get installedComposeFile(): string {
+    return this.getInstalledModuleFilePath("docker-compose.yml")
   }
 
   async getL2Network(): Promise<NodeInfo["l2"]> {
@@ -72,12 +71,12 @@ export default class SetupModule extends Module<ModuleConfig> {
     return true;
   }
 
-  isRepoCloned() {
-    return files.fileOrDirExists(this.installedModuleFolder);
+  get startAfterNode() {
+    return true;
   }
 
   async isInstalled() {
-    if (!this.moduleConfig.version || !this.moduleConfig.l2Network || !this.isRepoCloned()) {
+    if (!this.moduleConfig.version || !this.moduleConfig.l2Network) {
       return false;
     }
 
@@ -94,14 +93,14 @@ export default class SetupModule extends Module<ModuleConfig> {
     appConfigTemplate.environmentConfig.networks[0].rpcUrl = l2Network.rpcUrl;
     appConfigTemplate.environmentConfig.networks[0].l2ChainId = l2Network.chainId;
 
-    const appConfigPath = path.join(this.installedModuleFolder, "app-config.js");
+    const appConfigPath = this.getInstalledModuleFilePath("app-config.js");
     const appConfig = `window["##runtimeConfig"] = ${JSON.stringify(appConfigTemplate)};`;
 
     fs.writeFileSync(appConfigPath, appConfig, "utf-8");
 
     const commandError = await helpers.executeCommand(
-      `docker cp ${appConfigPath} block-explorer-app-1:${APP_RUNTIME_CONFIG_PATH}`,
-      { silent: true, cwd: this.installedModuleFolder }
+      `docker cp ${appConfigPath} zkcli-block-explorer-app-1:${APP_RUNTIME_CONFIG_PATH}`,
+      { silent: true, cwd: this.dataDirPath }
     );
 
     if (commandError) {
@@ -112,15 +111,19 @@ export default class SetupModule extends Module<ModuleConfig> {
   async install() {
     try {
       const l2Network = await this.getL2Network();
-      await git.cloneRepo(this.gitUrl, this.installedModuleFolder);
+      const latestVersion = await this.getLatestVersion();
 
-      const latestVersion = (await this.getLatestVersionFromLocalRepo())!;
-      await this.gitCheckoutVersion(latestVersion);
+      if (!fs.existsSync(this.dataDirPath)) {
+        Logger.info("Creating module folder...");
+        fs.mkdirSync(this.dataDirPath);
+      }
 
       Logger.info("Copying module configuration files...");
       fs.copyFileSync(this.getLocalFilePath("../docker-compose.yml"), this.installedComposeFile);
+
       const rpcPort = l2Network.rpcUrl.split(":").at(-1) || "3050";
-      fs.writeFileSync(path.join(this.installedModuleFolder, ".env"), `RPC_PORT=${rpcPort}`, "utf-8");
+      const envFileContent = `VERSION=${latestVersion}${os.EOL}RPC_PORT=${rpcPort}`;
+      fs.writeFileSync(this.getInstalledModuleFilePath(".env"), envFileContent, "utf-8");
 
       await docker.compose.create(this.installedComposeFile);
 
@@ -143,18 +146,6 @@ export default class SetupModule extends Module<ModuleConfig> {
     }
   }
 
-  async isRunning() {
-    return (await docker.compose.status(this.installedComposeFile)).some(({ isRunning }) => isRunning);
-  }
-
-  get startAfterNode() {
-    return true;
-  }
-
-  async start() {
-    await docker.compose.up(this.installedComposeFile);
-  }
-
   getStartupInfo() {
     return [
       "App: http://localhost:3010",
@@ -165,60 +156,35 @@ export default class SetupModule extends Module<ModuleConfig> {
     ];
   }
 
-  async getLogs() {
-    return await docker.compose.logs(this.installedComposeFile);
-  }
-
   get version() {
     return this.moduleConfig.version ?? undefined;
   }
 
-  async gitCheckoutVersion(version: string) {
-    await helpers.executeCommand(`git checkout ${version}`, { silent: true, cwd: this.installedModuleFolder });
-  }
-
-  async gitFetchTags() {
-    await helpers.executeCommand("git fetch --tags", { silent: true, cwd: this.installedModuleFolder });
-  }
-
-  async getLatestVersionFromLocalRepo(): Promise<string> {
-    const commitHash = (
-      await helpers.executeCommand("git rev-list --tags --max-count=1", {
-        silent: true,
-        cwd: this.installedModuleFolder,
-      })
-    )?.trim();
-    if (!commitHash?.length) {
-      throw new Error(`Failed to parse latest version hash from the local repository: ${commitHash}`);
-    }
-
-    const version = (
-      await helpers.executeCommand(`git describe --tags ${commitHash}`, {
-        silent: true,
-        cwd: this.installedModuleFolder,
-      })
-    )?.trim();
-    if (!version?.length || !version.startsWith("v")) {
-      throw new Error(`Failed to parse latest version from the local repository: ${version}`);
-    }
-    return version;
-  }
-
   async getLatestVersion(): Promise<string> {
-    if (latestVersion) {
-      return latestVersion;
+    if (!this.latestVersion) {
+      this.latestVersion = await git.getLatestReleaseVersion(REPO_URL);
     }
-    if (!this.isRepoCloned()) {
-      latestVersion = await git.getLatestReleaseVersion(REPO_URL);
-    } else {
-      try {
-        await this.gitFetchTags();
-      } catch (error) {
-        Logger.warn(`Failed to fetch tags for Block Explorer: ${error}. Version may be outdated.`);
-      }
-      latestVersion = await this.getLatestVersionFromLocalRepo();
+    return this.latestVersion;
+  }
+
+  async cleanupIndexedData() {
+    const moduleDockerVolume = "zkcli-block-explorer_postgres";
+    await Promise.all(["worker", "api", "postgres"].map(serviceName =>
+      helpers.executeCommand(
+        `docker-compose rm -fsv ${serviceName}`,
+        { silent: true, cwd: this.dataDirPath }
+      )
+    ));
+
+    const volumes = await helpers.executeCommand("docker volume ls", { silent: true });
+    if (volumes?.includes(moduleDockerVolume)) {
+      await helpers.executeCommand(`docker volume rm ${moduleDockerVolume}`, { silent: true });
     }
-    return latestVersion;
+  }
+
+  async start() {
+    await this.cleanupIndexedData();
+    await docker.compose.up(this.installedComposeFile);
   }
 
   async update() {
@@ -232,5 +198,13 @@ export default class SetupModule extends Module<ModuleConfig> {
 
   async clean() {
     await docker.compose.down(this.installedComposeFile);
+  }
+
+  async isRunning() {
+    return (await docker.compose.status(this.installedComposeFile)).some(({ isRunning }) => isRunning);
+  }
+
+  async getLogs() {
+    return await docker.compose.logs(this.installedComposeFile);
   }
 }
