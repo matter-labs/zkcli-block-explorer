@@ -103,7 +103,7 @@ export default class SetupModule extends Module<ModuleConfig> {
     fs.writeFileSync(appConfigPath, appConfig, "utf-8");
 
     const commandError = await helpers.executeCommand(
-      `docker cp ${appConfigPath} zkcli-block-explorer-app-1:${APP_RUNTIME_CONFIG_PATH}`,
+      `docker cp ${appConfigPath} ${this.package.name}-app-1:${APP_RUNTIME_CONFIG_PATH}`,
       { silent: true, cwd: this.dataDirPath }
     );
 
@@ -178,10 +178,7 @@ export default class SetupModule extends Module<ModuleConfig> {
       )
     );
 
-    const Package: {
-      name: string;
-    } = JSON.parse(fs.readFileSync(path.join(files.getDirPath(import.meta.url), "../package.json"), "utf-8"));
-    const fullDatabaseName = `${Package.name}_${DOCKER_DATABASE_VOLUME_NAME}`;
+    const fullDatabaseName = `${this.package.name}_${DOCKER_DATABASE_VOLUME_NAME}`;
     const volumes = await helpers.executeCommand("docker volume ls", { silent: true });
     if (volumes?.includes(fullDatabaseName)) {
       await helpers.executeCommand(`docker volume rm ${fullDatabaseName}`, { silent: true });
