@@ -1,18 +1,52 @@
+import fs from "fs";
+import { $fetch } from "ofetch";
+import ora from "ora";
+import os from "os";
 import path from "path";
 import { Module, files, git, docker, helpers, ModuleCategory, Logger } from "zksync-cli/lib";
 
 import type { ConfigHandler, NodeInfo } from "zksync-cli/lib";
 
-let latestVersion: string | undefined;
-
 const REPO_URL = "matter-labs/block-explorer";
 const APP_RUNTIME_CONFIG_PATH = "/usr/src/app/packages/app/dist/config.js";
+const DOCKER_DATABASE_VOLUME_NAME = "postgres";
+const endpoints = {
+  app: "http://localhost:3010",
+  api: "http://localhost:3020",
+};
 
 type ModuleConfig = {
   version?: string;
+  l2Network?: NodeInfo["l2"];
 };
 
+const appConfigTemplate = {
+  appEnvironment: "local",
+  environmentConfig: {
+    networks: [
+      {
+        apiUrl: "http://localhost:3020",
+        bridgeUrl: "http://localhost:3000/bridge",
+        hostnames: ["localhost"],
+        icon: "/images/icons/zksync-arrows.svg",
+        l2ChainId: 270,
+        l2NetworkName: "Local Node",
+        l2WalletUrl: "http://localhost:3000",
+        maintenance: false,
+        name: "local",
+        newProverUrl: "https://storage.googleapis.com/zksync-era-testnet-proofs/proofs_fri",
+        published: true,
+        rpcUrl: "http://localhost:3050",
+      },
+    ],
+  },
+};
+
+let latestVersion: string | undefined;
+
 export default class SetupModule extends Module<ModuleConfig> {
+  private readonly localFolder: string;
+
   constructor(config: ConfigHandler) {
     super(
       {
@@ -22,40 +56,91 @@ export default class SetupModule extends Module<ModuleConfig> {
       },
       config
     );
+    this.localFolder = files.getDirPath(import.meta.url);
   }
 
-  gitUrl = `https://github.com/${REPO_URL}.git`;
-  localComposeFile = path.join(files.getDirPath(import.meta.url), "../docker-compose.yml");
-  localAppConfigFile = path.join(files.getDirPath(import.meta.url), "../app-config.js");
-  get gitFolder() {
-    return path.join(this.dataDirPath, "./block-explorer");
-  }
-  get composeFile() {
-    return path.join(this.gitFolder, "zkcli-docker-compose.yaml");
+  getLocalFilePath(fileName: string): string {
+    return path.join(this.localFolder, fileName);
   }
 
-  /**
-   * Assumptions:
-   * - If an L1 node is detected, we assume the user is utilizing the default dockerized testing node.
-   * - If no L1 node is found, it's assumed the user is using the default in-memory node.
-   *
-   * Limitation:
-   * This method does not account for custom RPC URLs. This limitation should be addressed in future
-   * iterations of this module.
-   */
-  isNodeSupported(nodeInfo: NodeInfo) {
-    if (nodeInfo.l1) {
-      return true;
+  getInstalledModuleFilePath(fileName: string): string {
+    return path.join(this.dataDirPath, fileName);
+  }
+
+  get installedComposeFile(): string {
+    return this.getInstalledModuleFilePath("docker-compose.yml");
+  }
+
+  async getL2Network(): Promise<NodeInfo["l2"]> {
+    const nodeInfo = await this.configHandler.getNodeInfo();
+    return nodeInfo.l2;
+  }
+
+  get startAfterNode() {
+    return true;
+  }
+
+  async isInstalled() {
+    if (!this.moduleConfig.version || !this.moduleConfig.l2Network) {
+      return false;
     }
-    return false;
+
+    const { chainId, rpcUrl } = this.moduleConfig.l2Network;
+    const l2Network = await this.getL2Network();
+    if (l2Network.chainId !== chainId || l2Network.rpcUrl !== rpcUrl) {
+      return false;
+    }
+
+    return (await docker.compose.status(this.installedComposeFile)).length ? true : false;
   }
 
-  isRepoCloned() {
-    return files.fileOrDirExists(this.gitFolder);
+  async applyAppConfig(l2Network: NodeInfo["l2"]) {
+    appConfigTemplate.environmentConfig.networks[0].rpcUrl = l2Network.rpcUrl;
+    appConfigTemplate.environmentConfig.networks[0].l2ChainId = l2Network.chainId;
+
+    const appConfigPath = this.getInstalledModuleFilePath("app-config.js");
+    const appConfig = `window["##runtimeConfig"] = ${JSON.stringify(appConfigTemplate)};`;
+
+    fs.writeFileSync(appConfigPath, appConfig, "utf-8");
+
+    const commandError = await helpers.executeCommand(
+      `docker cp ${appConfigPath} ${this.package.name}-app-1:${APP_RUNTIME_CONFIG_PATH}`,
+      { silent: true, cwd: this.dataDirPath }
+    );
+
+    if (commandError) {
+      throw new Error(`Error while copying app config to the app container: ${commandError}`);
+    }
   }
-  createDockerComposeSymlink() {
+
+  async install() {
     try {
-      files.createSymlink(this.localComposeFile, this.composeFile);
+      const l2Network = await this.getL2Network();
+      const version = await this.getLatestVersion();
+
+      if (!fs.existsSync(this.dataDirPath)) {
+        Logger.debug("Creating module folder...");
+        fs.mkdirSync(this.dataDirPath);
+      }
+
+      Logger.debug("Copying module configuration files...");
+      fs.copyFileSync(this.getLocalFilePath("../docker-compose.yml"), this.installedComposeFile);
+
+      const rpcPort = l2Network.rpcUrl.split(":").at(-1) || "3050";
+      const envFileContent = `VERSION=${version}${os.EOL}RPC_PORT=${rpcPort}`;
+      fs.writeFileSync(this.getInstalledModuleFilePath(".env"), envFileContent, "utf-8");
+
+      await docker.compose.create(this.installedComposeFile);
+
+      Logger.debug("Applying App config...");
+      await this.applyAppConfig(l2Network);
+
+      Logger.debug("Saving module config...");
+      this.setModuleConfig({
+        ...this.moduleConfig,
+        version: version,
+        l2Network,
+      });
     } catch (error) {
       if (error?.toString().includes("operation not permitted")) {
         throw new Error(
@@ -65,115 +150,128 @@ export default class SetupModule extends Module<ModuleConfig> {
       throw error;
     }
   }
-  async applyAppConfig() {
-    await helpers.executeCommand(
-      `docker cp ${this.localAppConfigFile} block-explorer-app-1:${APP_RUNTIME_CONFIG_PATH}`,
-      { silent: true, cwd: this.gitFolder }
-    );
-  }
-  isDockerComposeCreated() {
-    return files.fileOrDirExists(this.composeFile);
-  }
-  async isInstalled() {
-    if (!this.isRepoCloned() || !this.isDockerComposeCreated()) return false;
 
-    return (await docker.compose.status(this.composeFile)).length ? true : false;
-  }
-  async install() {
-    await git.cloneRepo(this.gitUrl, this.gitFolder);
-    const latestVersion = (await this.getLatestVersionFromLocalRepo())!;
-    await this.gitCheckoutVersion(latestVersion);
-    if (!this.isDockerComposeCreated()) {
-      this.createDockerComposeSymlink();
-    }
-    await docker.compose.create(this.composeFile);
-    await this.applyAppConfig();
-    this.setModuleConfig({
-      ...this.moduleConfig,
-      version: latestVersion,
-    });
-  }
-
-  async isRunning() {
-    return (await docker.compose.status(this.composeFile)).some(({ isRunning }) => isRunning);
-  }
-  get startAfterNode() {
-    return true;
-  }
-  async start() {
-    await docker.compose.up(this.composeFile);
-  }
   getStartupInfo() {
     return [
-      "App: http://localhost:3010",
+      `App: ${endpoints.app}`,
       {
         text: "HTTP API:",
-        list: ["Endpoint: http://localhost:3020", "Documentation: http://localhost:3020/docs"],
+        list: [`Endpoint: ${endpoints.api}`, `Documentation: ${endpoints.api}/docs`],
       },
     ];
   }
 
-  async getLogs() {
-    return await docker.compose.logs(this.composeFile);
-  }
-
   get version() {
-    return this.moduleConfig.version?.toString() ?? undefined;
+    return this.moduleConfig.version ?? undefined;
   }
-  async gitCheckoutVersion(version: string) {
-    await helpers.executeCommand(`git checkout ${version}`, { silent: true, cwd: this.gitFolder });
-  }
-  async gitFetchTags() {
-    await helpers.executeCommand("git fetch --tags", { silent: true, cwd: this.gitFolder });
-  }
-  async getLatestVersionFromLocalRepo(): Promise<string> {
-    const commitHash = (
-      await helpers.executeCommand("git rev-list --tags --max-count=1", {
-        silent: true,
-        cwd: this.gitFolder,
-      })
-    )?.trim();
-    if (!commitHash?.length) {
-      throw new Error(`Failed to parse latest version hash from the local repository: ${commitHash}`);
-    }
 
-    const version = (
-      await helpers.executeCommand(`git describe --tags ${commitHash}`, {
-        silent: true,
-        cwd: this.gitFolder,
-      })
-    )?.trim();
-    if (!version?.length || !version.startsWith("v")) {
-      throw new Error(`Failed to parse latest version from the local repository: ${version}`);
-    }
-    return version;
-  }
   async getLatestVersion(): Promise<string> {
-    if (latestVersion) {
-      return latestVersion;
-    }
-    if (!this.isRepoCloned()) {
+    if (!latestVersion) {
       latestVersion = await git.getLatestReleaseVersion(REPO_URL);
-    } else {
-      try {
-        await this.gitFetchTags();
-      } catch (error) {
-        Logger.warn(`Failed to fetch tags for Block Explorer: ${error}. Version may be outdated.`);
-      }
-      latestVersion = await this.getLatestVersionFromLocalRepo();
     }
     return latestVersion;
   }
+
+  async cleanupIndexedData() {
+    await Promise.all(
+      ["worker", "api", "postgres"].map((serviceName) =>
+        helpers.executeCommand(`docker-compose rm -fsv ${serviceName}`, { silent: true, cwd: this.dataDirPath })
+      )
+    );
+
+    const fullDatabaseName = `${this.package.name}_${DOCKER_DATABASE_VOLUME_NAME}`;
+    const volumes = await helpers.executeCommand("docker volume ls", { silent: true });
+    if (volumes?.includes(fullDatabaseName)) {
+      await helpers.executeCommand(`docker volume rm ${fullDatabaseName}`, { silent: true });
+    }
+  }
+
+  async getNodeLatestBlockNumber(): Promise<number> {
+    const l2Network = await this.getL2Network();
+    try {
+      const response = await $fetch(l2Network.rpcUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_blockNumber",
+          params: [],
+          id: 1,
+        }),
+      });
+      const blockNumber = parseInt(response.result, 16);
+      if (isNaN(blockNumber)) {
+        throw new Error(`Unexpected response from L2 node: ${JSON.stringify(response)}`);
+      }
+      return blockNumber;
+    } catch (error) {
+      throw new Error(`Failed to get latest block number from L2 node: ${error}`);
+    }
+  }
+
+  async getApiLatestBlockNumber(): Promise<number> {
+    const response = await $fetch(`${endpoints.api}/blocks`);
+    return response.items[0]?.number ?? 0;
+  }
+
+  /**
+   * @summary Waits for full indexing of the L2 node
+   * @description Gets latest block number from the L2 node and Block Explorer API and compares them.
+   **/
+  async waitForFullIndexing() {
+    const spinner = ora("Initializing Block Explorer API...").start();
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let apiLatestBlockNumber: number;
+      try {
+        apiLatestBlockNumber = await this.getApiLatestBlockNumber();
+      } catch (error) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      try {
+        const nodeLatestBlockNumber = await this.getNodeLatestBlockNumber();
+
+        if (apiLatestBlockNumber === nodeLatestBlockNumber) {
+          spinner.succeed("Block Explorer initialized");
+          return;
+        }
+
+        spinner.text = `Block Explorer is processing the data. Blocks processed: ${apiLatestBlockNumber}/${nodeLatestBlockNumber}`;
+      } catch (error) {
+        spinner.fail("Failed to get node latest block number");
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
+  async start() {
+    await this.cleanupIndexedData();
+    await docker.compose.up(this.installedComposeFile);
+    await this.waitForFullIndexing();
+  }
+
   async update() {
     await this.clean();
     await this.install();
   }
 
   async stop() {
-    await docker.compose.stop(this.composeFile);
+    await docker.compose.stop(this.installedComposeFile);
   }
 
   async clean() {
-    await docker.compose.down(this.composeFile);
+    await docker.compose.down(this.installedComposeFile);
+  }
+
+  async isRunning() {
+    return (await docker.compose.status(this.installedComposeFile)).some(({ isRunning }) => isRunning);
+  }
+
+  async getLogs() {
+    return await docker.compose.logs(this.installedComposeFile);
   }
 }
