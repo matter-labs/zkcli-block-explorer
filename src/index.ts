@@ -42,9 +42,10 @@ const appConfigTemplate = {
   },
 };
 
+let latestVersion: string | undefined;
+
 export default class SetupModule extends Module<ModuleConfig> {
   private readonly localFolder: string;
-  private latestVersion?: string;
 
   constructor(config: ConfigHandler) {
     super(
@@ -115,7 +116,7 @@ export default class SetupModule extends Module<ModuleConfig> {
   async install() {
     try {
       const l2Network = await this.getL2Network();
-      const latestVersion = await this.getLatestVersion();
+      const version = await this.getLatestVersion();
 
       if (!fs.existsSync(this.dataDirPath)) {
         Logger.debug("Creating module folder...");
@@ -126,7 +127,7 @@ export default class SetupModule extends Module<ModuleConfig> {
       fs.copyFileSync(this.getLocalFilePath("../docker-compose.yml"), this.installedComposeFile);
 
       const rpcPort = l2Network.rpcUrl.split(":").at(-1) || "3050";
-      const envFileContent = `VERSION=${latestVersion}${os.EOL}RPC_PORT=${rpcPort}`;
+      const envFileContent = `VERSION=${version}${os.EOL}RPC_PORT=${rpcPort}`;
       fs.writeFileSync(this.getInstalledModuleFilePath(".env"), envFileContent, "utf-8");
 
       await docker.compose.create(this.installedComposeFile);
@@ -137,7 +138,7 @@ export default class SetupModule extends Module<ModuleConfig> {
       Logger.debug("Saving module config...");
       this.setModuleConfig({
         ...this.moduleConfig,
-        version: latestVersion,
+        version: version,
         l2Network,
       });
     } catch (error) {
@@ -165,10 +166,10 @@ export default class SetupModule extends Module<ModuleConfig> {
   }
 
   async getLatestVersion(): Promise<string> {
-    if (!this.latestVersion) {
-      this.latestVersion = await git.getLatestReleaseVersion(REPO_URL);
+    if (!latestVersion) {
+      latestVersion = await git.getLatestReleaseVersion(REPO_URL);
     }
-    return this.latestVersion;
+    return latestVersion;
   }
 
   async cleanupIndexedData() {
