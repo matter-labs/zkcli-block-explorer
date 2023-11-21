@@ -1,11 +1,18 @@
+import fs from "fs";
+import { $fetch } from "ofetch";
+import ora from "ora";
 import os from "os";
 import path from "path";
 import { Module, files, git, docker, helpers, ModuleCategory, Logger } from "zksync-cli/lib";
-import * as fs from "node:fs";
+
 import type { ConfigHandler, NodeInfo } from "zksync-cli/lib";
 
 const REPO_URL = "matter-labs/block-explorer";
 const APP_RUNTIME_CONFIG_PATH = "/usr/src/app/packages/app/dist/config.js";
+const endpoints = {
+  app: "http://localhost:3010",
+  api: "http://localhost:3020",
+};
 
 type ModuleConfig = {
   version?: string;
@@ -28,10 +35,10 @@ const appConfigTemplate = {
         name: "local",
         newProverUrl: "https://storage.googleapis.com/zksync-era-testnet-proofs/proofs_fri",
         published: true,
-        rpcUrl: "http://localhost:3050"
-      }
-    ]
-  }
+        rpcUrl: "http://localhost:3050",
+      },
+    ],
+  },
 };
 
 export default class SetupModule extends Module<ModuleConfig> {
@@ -59,16 +66,12 @@ export default class SetupModule extends Module<ModuleConfig> {
   }
 
   get installedComposeFile(): string {
-    return this.getInstalledModuleFilePath("docker-compose.yml")
+    return this.getInstalledModuleFilePath("docker-compose.yml");
   }
 
   async getL2Network(): Promise<NodeInfo["l2"]> {
     const nodeInfo = await this.configHandler.getNodeInfo();
     return nodeInfo.l2;
-  }
-
-  isNodeSupported() {
-    return true;
   }
 
   get startAfterNode() {
@@ -148,10 +151,10 @@ export default class SetupModule extends Module<ModuleConfig> {
 
   getStartupInfo() {
     return [
-      "App: http://localhost:3010",
+      `App: ${endpoints.app}`,
       {
         text: "HTTP API:",
-        list: ["Endpoint: http://localhost:3020", "Documentation: http://localhost:3020/docs"],
+        list: [`Endpoint: ${endpoints.api}`, `Documentation: ${endpoints.api}/docs`],
       },
     ];
   }
@@ -169,12 +172,11 @@ export default class SetupModule extends Module<ModuleConfig> {
 
   async cleanupIndexedData() {
     const moduleDockerVolume = "zkcli-block-explorer_postgres";
-    await Promise.all(["worker", "api", "postgres"].map(serviceName =>
-      helpers.executeCommand(
-        `docker-compose rm -fsv ${serviceName}`,
-        { silent: true, cwd: this.dataDirPath }
+    await Promise.all(
+      ["worker", "api", "postgres"].map((serviceName) =>
+        helpers.executeCommand(`docker-compose rm -fsv ${serviceName}`, { silent: true, cwd: this.dataDirPath })
       )
-    ));
+    );
 
     const volumes = await helpers.executeCommand("docker volume ls", { silent: true });
     if (volumes?.includes(moduleDockerVolume)) {
@@ -182,9 +184,72 @@ export default class SetupModule extends Module<ModuleConfig> {
     }
   }
 
+  async getNodeLatestBlockNumber(): Promise<number> {
+    const l2Network = await this.getL2Network();
+    try {
+      const response = await $fetch(l2Network.rpcUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_blockNumber",
+          params: [],
+          id: 1,
+        }),
+      });
+      const blockNumber = parseInt(response.result, 16);
+      if (isNaN(blockNumber)) {
+        throw new Error(`Unexpected response from L2 node: ${JSON.stringify(response)}`);
+      }
+      return blockNumber;
+    } catch (error) {
+      throw new Error(`Failed to get latest block number from L2 node: ${error}`);
+    }
+  }
+
+  async getApiLatestBlockNumber(): Promise<number> {
+    const response = await $fetch(`${endpoints.api}/blocks`);
+    return response.items[0]?.number ?? 0;
+  }
+
+  /**
+   * @summary Waits for full indexing of the L2 node
+   * @description Gets latest block number from the L2 node and Block Explorer API and compares them.
+   **/
+  async waitForFullIndexing() {
+    const spinner = ora("Waiting for Block Explorer initialization...").start();
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let apiLatestBlockNumber: number;
+      try {
+        apiLatestBlockNumber = await this.getApiLatestBlockNumber();
+      } catch (error) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      try {
+        const nodeLatestBlockNumber = await this.getNodeLatestBlockNumber();
+
+        if (apiLatestBlockNumber === nodeLatestBlockNumber) {
+          spinner.succeed("Block Explorer initialized");
+          return;
+        }
+
+        spinner.text = `Block Explorer is processing the data. Blocks processed: ${apiLatestBlockNumber}/${nodeLatestBlockNumber}`;
+      } catch (error) {
+        spinner.fail("Failed to get node latest block number");
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
   async start() {
     await this.cleanupIndexedData();
     await docker.compose.up(this.installedComposeFile);
+    await this.waitForFullIndexing();
   }
 
   async update() {
