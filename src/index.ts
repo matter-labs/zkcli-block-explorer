@@ -117,11 +117,11 @@ export default class SetupModule extends Module<ModuleConfig> {
       const latestVersion = await this.getLatestVersion();
 
       if (!fs.existsSync(this.dataDirPath)) {
-        Logger.info("Creating module folder...");
+        Logger.debug("Creating module folder...");
         fs.mkdirSync(this.dataDirPath);
       }
 
-      Logger.info("Copying module configuration files...");
+      Logger.debug("Copying module configuration files...");
       fs.copyFileSync(this.getLocalFilePath("../docker-compose.yml"), this.installedComposeFile);
 
       const rpcPort = l2Network.rpcUrl.split(":").at(-1) || "3050";
@@ -130,10 +130,10 @@ export default class SetupModule extends Module<ModuleConfig> {
 
       await docker.compose.create(this.installedComposeFile);
 
-      Logger.info("Applying App config...");
+      Logger.debug("Applying App config...");
       await this.applyAppConfig(l2Network);
 
-      Logger.info("Saving module config...");
+      Logger.debug("Saving module config...");
       this.setModuleConfig({
         ...this.moduleConfig,
         version: latestVersion,
