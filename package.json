@@ -1,5 +1,5 @@
 {
-  "name": "zkcli-block-explorer-c",
+  "name": "zkcli-block-explorer",
   "type": "module",
   "version": "0.0.0-development",
   "description": "zkSync Block Explorer module for zkcli",
