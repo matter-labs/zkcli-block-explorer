@@ -9,6 +9,7 @@ import type { ConfigHandler, NodeInfo } from "zksync-cli/lib";
 
 const REPO_URL = "matter-labs/block-explorer";
 const APP_RUNTIME_CONFIG_PATH = "/usr/src/app/packages/app/dist/config.js";
+const DOCKER_DATABASE_VOLUME_NAME = "postgres";
 const endpoints = {
   app: "http://localhost:3010",
   api: "http://localhost:3020",
@@ -171,16 +172,19 @@ export default class SetupModule extends Module<ModuleConfig> {
   }
 
   async cleanupIndexedData() {
-    const moduleDockerVolume = "zkcli-block-explorer_postgres";
     await Promise.all(
       ["worker", "api", "postgres"].map((serviceName) =>
         helpers.executeCommand(`docker-compose rm -fsv ${serviceName}`, { silent: true, cwd: this.dataDirPath })
       )
     );
 
+    const Package: {
+      name: string;
+    } = JSON.parse(fs.readFileSync(path.join(files.getDirPath(import.meta.url), "../package.json"), "utf-8"));
+    const fullDatabaseName = `${Package.name}_${DOCKER_DATABASE_VOLUME_NAME}`;
     const volumes = await helpers.executeCommand("docker volume ls", { silent: true });
-    if (volumes?.includes(moduleDockerVolume)) {
-      await helpers.executeCommand(`docker volume rm ${moduleDockerVolume}`, { silent: true });
+    if (volumes?.includes(fullDatabaseName)) {
+      await helpers.executeCommand(`docker volume rm ${fullDatabaseName}`, { silent: true });
     }
   }
 
@@ -216,7 +220,7 @@ export default class SetupModule extends Module<ModuleConfig> {
    * @description Gets latest block number from the L2 node and Block Explorer API and compares them.
    **/
   async waitForFullIndexing() {
-    const spinner = ora("Waiting for Block Explorer initialization...").start();
+    const spinner = ora("Initializing Block Explorer API...").start();
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
