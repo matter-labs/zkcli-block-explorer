@@ -191,6 +191,9 @@ export default class SetupModule extends Module<ModuleConfig> {
     try {
       const response = await $fetch(l2Network.rpcUrl, {
         method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           jsonrpc: "2.0",
           method: "eth_blockNumber",
