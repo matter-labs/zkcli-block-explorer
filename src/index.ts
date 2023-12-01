@@ -101,7 +101,11 @@ export default class SetupModule extends Module<ModuleConfig> {
     const appConfigPath = this.getInstalledModuleFilePath("app-config.js");
     const appConfig = `window["##runtimeConfig"] = ${JSON.stringify(appConfigTemplate)};`;
 
-    fs.writeFileSync(appConfigPath, appConfig, "utf-8");
+    try {
+      fs.writeFileSync(appConfigPath, appConfig, "utf-8");
+    } catch (error) {
+      throw new Error(`Error writing to app config file: ${error}`);
+    }
 
     const commandError = await helpers.executeCommand(
       `docker cp ${appConfigPath} ${this.package.name}-app-1:${APP_RUNTIME_CONFIG_PATH}`,
@@ -128,7 +132,11 @@ export default class SetupModule extends Module<ModuleConfig> {
 
       const rpcPort = l2Network.rpcUrl.split(":").at(-1) || "3050";
       const envFileContent = `VERSION=${version}${os.EOL}RPC_PORT=${rpcPort}`;
-      fs.writeFileSync(this.getInstalledModuleFilePath(".env"), envFileContent, "utf-8");
+      try {
+        fs.writeFileSync(this.getInstalledModuleFilePath(".env"), envFileContent, "utf-8");
+      } catch (error) {
+        throw new Error(`Error writing to .env file: ${error}`);
+      }
 
       await docker.compose.create(this.installedComposeFile);
 
@@ -191,6 +199,9 @@ export default class SetupModule extends Module<ModuleConfig> {
     try {
       const response = await $fetch(l2Network.rpcUrl, {
         method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           jsonrpc: "2.0",
           method: "eth_blockNumber",
