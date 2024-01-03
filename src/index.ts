@@ -4,6 +4,7 @@ import ora from "ora";
 import os from "os";
 import path from "path";
 import { Module, files, git, docker, helpers, ModuleCategory, Logger } from "zksync-cli/lib";
+import { compareSemanticVersions } from "./utils.js";
 
 import type { ConfigHandler, NodeInfo } from "zksync-cli/lib";
 
@@ -14,6 +15,7 @@ const endpoints = {
   app: "http://localhost:3010",
   api: "http://localhost:3020",
 };
+const MAX_BE_VERSION = "v2.42.1";
 
 type ModuleConfig = {
   version?: string;
@@ -168,6 +170,9 @@ export default class SetupModule extends Module<ModuleConfig> {
   async getLatestVersion(): Promise<string> {
     if (!latestVersion) {
       latestVersion = await git.getLatestReleaseVersion(REPO_URL);
+    }
+    if (compareSemanticVersions(latestVersion, MAX_BE_VERSION) > 0) {
+      latestVersion = MAX_BE_VERSION;
     }
     return latestVersion;
   }
