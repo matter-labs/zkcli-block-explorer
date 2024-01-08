@@ -1,6 +1,3 @@
-version: "3.2"
-name: "zkcli-block-explorer"
-
 services:
   app:
     platform: linux/amd64
