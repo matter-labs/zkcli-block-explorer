@@ -25,6 +25,8 @@ services:
       - BLOCKCHAIN_RPC_URL=http://host.docker.internal:${RPC_PORT}
       - BATCHES_PROCESSING_POLLING_INTERVAL=1000
     restart: unless-stopped
+    extra_hosts:
+          - "host.docker.internal:host-gateway"
 
   api:
     platform: linux/amd64
