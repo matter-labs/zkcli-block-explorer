@@ -104,7 +104,7 @@ export default class SetupModule extends Module<ModuleConfig> {
     fs.writeFileSync(appConfigPath, appConfig, "utf-8");
 
     const commandError = await helpers.executeCommand(
-      `docker cp ${appConfigPath} ${this.package.name}-app-1:${APP_RUNTIME_CONFIG_PATH}`,
+      `docker compose cp ${appConfigPath} app:${APP_RUNTIME_CONFIG_PATH}`,
       { silent: true, cwd: this.dataDirPath }
     );
 
@@ -175,7 +175,7 @@ export default class SetupModule extends Module<ModuleConfig> {
   async cleanupIndexedData() {
     await Promise.all(
       ["worker", "api", "postgres"].map((serviceName) =>
-        helpers.executeCommand(`docker-compose rm -fsv ${serviceName}`, { silent: true, cwd: this.dataDirPath })
+        helpers.executeCommand(`docker compose rm -fsv ${serviceName}`, { silent: true, cwd: this.dataDirPath })
       )
     );
 
