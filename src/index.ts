@@ -5,7 +5,7 @@ import os from "os";
 import path from "path";
 import { Module, files, git, docker, helpers, ModuleCategory, Logger } from "zksync-cli/lib";
 
-import type { ConfigHandler, NodeInfo } from "zksync-cli/lib";
+import type { ConfigHandler } from "zksync-cli/lib";
 
 const REPO_URL = "matter-labs/block-explorer";
 const APP_RUNTIME_CONFIG_PATH = "/usr/src/app/packages/app/dist/config.js";
@@ -17,7 +17,7 @@ const endpoints = {
 
 type ModuleConfig = {
   version?: string;
-  l2Network?: NodeInfo["l2"];
+  rpcPortUsed?: string;
 };
 
 const appConfigTemplate = {
@@ -71,32 +71,29 @@ export default class SetupModule extends Module<ModuleConfig> {
     return this.getInstalledModuleFilePath("docker-compose.yml");
   }
 
-  async getL2Network(): Promise<NodeInfo["l2"]> {
-    const nodeInfo = await this.configHandler.getNodeInfo();
-    return nodeInfo.l2;
-  }
-
   get startAfterNode() {
     return true;
   }
 
   async isInstalled() {
-    if (!this.moduleConfig.version || !this.moduleConfig.l2Network) {
+    if (!this.moduleConfig.version || !this.moduleConfig.rpcPortUsed) {
       return false;
     }
 
-    const { chainId, rpcUrl } = this.moduleConfig.l2Network;
-    const l2Network = await this.getL2Network();
-    if (l2Network.chainId !== chainId || l2Network.rpcUrl !== rpcUrl) {
+    const nodeInfo = await this.configHandler.getNodeInfo();
+    if (nodeInfo.rpcUrl !== this.moduleConfig.rpcPortUsed) {
       return false;
     }
 
     return (await docker.compose.status(this.installedComposeFile)).length ? true : false;
   }
 
-  async applyAppConfig(l2Network: NodeInfo["l2"]) {
-    appConfigTemplate.environmentConfig.networks[0].rpcUrl = l2Network.rpcUrl;
-    appConfigTemplate.environmentConfig.networks[0].l2ChainId = l2Network.chainId;
+  async applyAppConfig() {
+    const nodeInfo = await this.configHandler.getNodeInfo();
+    appConfigTemplate.environmentConfig.networks[0].rpcUrl = nodeInfo.rpcUrl;
+    appConfigTemplate.environmentConfig.networks[0].l2ChainId = nodeInfo.id;
+    appConfigTemplate.environmentConfig.networks[0].l2NetworkName = nodeInfo.name;
+    appConfigTemplate.environmentConfig.networks[0].name = nodeInfo.network;
 
     const appConfigPath = this.getInstalledModuleFilePath("app-config.js");
     const appConfig = `window["##runtimeConfig"] = ${JSON.stringify(appConfigTemplate)};`;
@@ -119,7 +116,7 @@ export default class SetupModule extends Module<ModuleConfig> {
 
   async install() {
     try {
-      const l2Network = await this.getL2Network();
+      const nodeInfo = await this.configHandler.getNodeInfo();
       const version = await this.getLatestVersion();
 
       if (!fs.existsSync(this.dataDirPath)) {
@@ -130,7 +127,7 @@ export default class SetupModule extends Module<ModuleConfig> {
       Logger.debug("Copying module configuration files...");
       fs.copyFileSync(this.getLocalFilePath("../docker-compose.yml"), this.installedComposeFile);
 
-      const rpcPort = l2Network.rpcUrl.split(":").at(-1) || "3050";
+      const rpcPort = nodeInfo.rpcUrl.split(":").at(-1) || "3050";
       const envFileContent = `VERSION=${version}${os.EOL}RPC_PORT=${rpcPort}`;
       try {
         fs.writeFileSync(this.getInstalledModuleFilePath(".env"), envFileContent, "utf-8");
@@ -140,14 +137,11 @@ export default class SetupModule extends Module<ModuleConfig> {
 
       await docker.compose.create(this.installedComposeFile);
 
-      Logger.debug("Applying App config...");
-      await this.applyAppConfig(l2Network);
-
       Logger.debug("Saving module config...");
       this.setModuleConfig({
         ...this.moduleConfig,
         version: version,
-        l2Network,
+        rpcPortUsed: nodeInfo.rpcUrl,
       });
     } catch (error) {
       if (error?.toString().includes("operation not permitted")) {
@@ -195,12 +189,12 @@ export default class SetupModule extends Module<ModuleConfig> {
   }
 
   async getNodeLatestBlockNumber(): Promise<number> {
-    const l2Network = await this.getL2Network();
+    const nodeInfo = await this.configHandler.getNodeInfo();
     try {
-      const response = await $fetch(l2Network.rpcUrl, {
+      const response = await $fetch(nodeInfo.rpcUrl, {
         method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -261,6 +255,8 @@ export default class SetupModule extends Module<ModuleConfig> {
 
   async start() {
     await this.cleanupIndexedData();
+    Logger.debug("Applying App config...");
+    await this.applyAppConfig();
     await docker.compose.up(this.installedComposeFile);
     await this.waitForFullIndexing();
   }
