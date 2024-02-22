@@ -20,10 +20,23 @@ services:
       - DATABASE_PASSWORD=postgres
       - DATABASE_NAME=block-explorer
       - BLOCKCHAIN_RPC_URL=http://host.docker.internal:${RPC_PORT}
+      - DATA_FETCHER_URL=http://data-fetcher:3040
       - BATCHES_PROCESSING_POLLING_INTERVAL=1000
     restart: unless-stopped
     extra_hosts:
-          - "host.docker.internal:host-gateway"
+      - "host.docker.internal:host-gateway"
+
+  data-fetcher:
+    platform: linux/amd64
+    image: "matterlabs/block-explorer-data-fetcher:${VERSION}"
+    environment:
+      - PORT=3040
+      - LOG_LEVEL=verbose
+      - NODE_ENV=development
+      - BLOCKCHAIN_RPC_URL=http://host.docker.internal:${RPC_PORT}
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   api:
     platform: linux/amd64
