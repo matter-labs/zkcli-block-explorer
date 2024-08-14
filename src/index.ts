@@ -37,6 +37,7 @@ const appConfigTemplate = {
         newProverUrl: "https://storage.googleapis.com/zksync-era-testnet-proofs/proofs_fri",
         published: true,
         rpcUrl: "http://localhost:3050",
+        baseTokenAddress: "0x000000000000000000000000000000000000800A",
       },
     ],
   },
